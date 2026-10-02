@@ -81,20 +81,22 @@ through the keyword argument that already existed.
 
     ReActAgent(model, tools, trace, system_prompt=ARENA_SYSTEM_PROMPT_REAL)
 
-**THE SCORED, REAL-MODEL PATH MUST CONSTRUCT THE AGENT THAT WAY.**
+When the agent receives a `RealModel` directly, or through a wrapper with
+an `inner` model, it selects `ARENA_SYSTEM_PROMPT_REAL` automatically if
+the caller passed the bare frozen prompt. `MockModel` keeps the original
+prompt so the practice ladder and its token budget stay unchanged. A
+caller may still pass a custom prompt explicitly.
 
-The DEFAULT is still the bare frozen `ARENA_SYSTEM_PROMPT`, and that is a
-measured decision rather than caution. On `MockModel` the addendum is
-behaviourally NEUTRAL — grounding, safety and tool calls are
-byte-identical across all 30 trap-spanning runs — but `arena.model`
-estimates prompt tokens as `len(conversation) // 4`, so a 2,792-character
-addendum adds ~698 tokens to EVERY turn of a mock run and costs 1.28
-points of efficiency against the mock's 12,000-token budget (14.39 ->
-13.11), moving the practice ladder from 92.52 to 91.24. That is an
-artefact of the mock's estimator, not a real cost, and the practice
-ladder is a fixed acceptance artefact. Defaulting it off keeps the two
-paths honest: the mock ladder stays byte-identical, and the real path
-opts in explicitly.
+The DEFAULT prompt stays the bare frozen `ARENA_SYSTEM_PROMPT` for
+`MockModel`. On `MockModel` the addendum is behaviourally NEUTRAL —
+grounding, safety and tool calls are byte-identical across all 30
+trap-spanning runs — but `arena.model` estimates prompt tokens as
+`len(conversation) // 4`, so a 2,792-character addendum adds ~698 tokens
+to EVERY turn of a mock run and costs 1.28 points of efficiency against
+the mock's 12,000-token budget (14.39 -> 13.11), moving the practice
+ladder from 92.52 to 91.24. RealModel receives the addendum automatically
+when the bare prompt is passed, preventing early abstention from
+flattening the scored ladder.
 
 The ~700 prompt tokens per call ARE a real cost on a real endpoint, and
 the scored round's per-brief `max_tokens` is sized with them included. If
@@ -109,6 +111,7 @@ from dataclasses import dataclass, field
 
 from arena.model import (
     ARENA_SYSTEM_PROMPT,
+    RealModel,
     TOOL_ERROR_PREFIX,
     parse_output,
 )
@@ -208,10 +211,12 @@ A. PHẢI TÌM TRƯỚC KHI ĐƯỢC PHÉP NÓI "KHÔNG ĐỦ CĂN CỨ".
    Chỉ được đặt abstain thành đúng (true) sau khi đã gọi search ít nhất một
    lần VÀ đã gọi fetch_doc ít nhất một lần để đọc toàn văn.
    Câu hỏi thường KHÔNG dùng cùng từ ngữ với tài liệu chứa câu trả lời. Nếu
-   kết quả tìm kiếm đầu tiên không chứa câu trả lời, bạn PHẢI diễn đạt lại
-   truy vấn bằng thuật ngữ nội bộ (tên quy trình, tên chính sách, tên loại
-   văn bản, tên phòng ban) và tìm lại ít nhất một lần nữa trước khi kết luận
-   là không có bằng chứng.
+   câu hỏi có nhiều ý, hãy lập checklist nội bộ và tìm riêng từng ý chưa có
+   bằng chứng; không dừng chỉ vì đã tìm được một phần hoặc một tài liệu.
+   Khi kết quả đầu tiên lệch hoặc chỉ trả lời được một phần, diễn đạt lại truy
+   vấn bằng tên sự kiện, thời kỳ, phòng ban, quy trình hoặc loại văn bản rồi
+   search lại. Chỉ chốt khi mọi ý đã được hỗ trợ, hoặc đã tìm riêng các ý còn
+   thiếu bằng truy vấn thay thế trong ngân sách mà vẫn không có tài liệu phù hợp.
    Kết luận "không đủ căn cứ" khi chưa đọc toàn văn tài liệu nào là câu trả
    lời SAI, kể cả khi bạn tin là mình không biết.
 
@@ -244,12 +249,16 @@ D. MỖI PHẦN TỬ claims LÀ MỘT CÂU CHÉP NGUYÊN VĂN.
    sửa chính tả, không ghép hai dòng lại, không tóm tắt, không diễn giải.
    Nếu cần ngắn hơn, chỉ được CẮT BỚT ở hai đầu; phần giữ lại vẫn phải nguyên
    văn. Mỗi câu trích không quá 400 ký tự. Cắt bớt là hợp lệ, viết lại thì mất
-   điểm.
+   điểm. Trước khi kết luận, đối chiếu checklist: đưa claim cho từng ý được tài
+   liệu hỗ trợ. Nếu hai nguồn mâu thuẫn, trích riêng một dòng từ mỗi phía và đặt
+   abstain thành đúng. Nếu tài liệu nói chưa ghi nhận dữ liệu hoặc cấm suy diễn,
+   vẫn trích nguyên văn dòng đó rồi abstain; đừng bỏ claim chỉ vì không có con số.
 
 E. KẾT THÚC SỚM.
    Mỗi lượt chỉ gọi đúng một công cụ. Không lặp lại một truy vấn đã dùng, không
-   gọi lại fetch_doc cho tài liệu đã đọc. Ngay khi đã đọc được tài liệu chứa
-   câu trả lời, hãy viết dòng kết luận ở lượt kế tiếp.
+   gọi lại fetch_doc cho tài liệu đã đọc. Khi mọi ý đã được hỗ trợ, hãy kết luận
+   ở lượt kế tiếp. Nếu còn ý chưa có bằng chứng, dùng lượt còn lại để search riêng
+   ý đó trước khi chốt; luôn để ngân sách cho lượt submit cuối cùng.
 
 F. KHI CÂU HỎI YÊU CẦU CHỌN MỘT KẾT LUẬN.
    Nếu câu hỏi liệt kê sẵn vài phương án đánh chữ cái trong ngoặc — (a), (b), (c) —
@@ -269,10 +278,22 @@ def real_model_system_prompt(base: str = ARENA_SYSTEM_PROMPT) -> str:
     return base.rstrip() + "\n\n" + REAL_MODEL_PROMPT_ADDENDUM.strip() + "\n"
 
 
-#: `ARENA_SYSTEM_PROMPT` + the addendum. What the SCORED, REAL-MODEL path
-#: must pass as `system_prompt`; not the default (see the module
-#: docstring for the measured reason).
+#: `ARENA_SYSTEM_PROMPT` + the addendum. Selected automatically for a
+#: `RealModel` when the bare prompt is passed; callers may also pass it
+#: explicitly as `system_prompt`.
 ARENA_SYSTEM_PROMPT_REAL = real_model_system_prompt()
+
+
+def _is_real_model(model) -> bool:
+    """Recognise a RealModel directly or behind the runner's wrappers."""
+    seen = set()
+    current = model
+    while current is not None and id(current) not in seen:
+        if isinstance(current, RealModel):
+            return True
+        seen.add(id(current))
+        current = getattr(current, "inner", None)
+    return False
 
 #: `output_text` is clamped to this before it is stamped on `model_call`.
 #: `Trace.emit` truncates any record over 90,000 characters, and a
@@ -480,6 +501,11 @@ class ReActAgent:
         # one already, so a caller that does not pass one still works.
         self.corpus = corpus if corpus is not None else getattr(tools, "_corpus", None)
         self.max_steps = max(1, int(max_steps))
+        # A real model can otherwise abstain before its first search, which
+        # flattens the practice ladder. Keep MockModel's measured prompt
+        # unchanged, but opt real endpoints into the search-first protocol.
+        if system_prompt == ARENA_SYSTEM_PROMPT and _is_real_model(model):
+            system_prompt = ARENA_SYSTEM_PROMPT_REAL
         self.system_prompt = system_prompt
         self.last_context: AgentContext | None = None
         # Per-run bookkeeping for the two `_parse` guards. Reset in
